@@ -14,6 +14,7 @@
 #include ../../../zen/folders/jar.inc.mn
 #include ../../../zen/welcome/jar.inc.mn
 #include ../../../zen/media/jar.inc.mn
+#include ../../../zen/memory/jar.inc.mn
 #include ../../../zen/downloads/jar.inc.mn
 #include ../../../zen/images/jar.inc.mn
 #include ../../../zen/vendor/jar.inc.mn

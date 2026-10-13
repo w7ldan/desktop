@@ -58,6 +58,27 @@
 
 # Browser view
 
+- name: services.sync.prefs.sync.zen.memory.enabled
+  value: true
+
+- name: services.sync.prefs.sync.zen.memory.mode
+  value: true
+
+- name: services.sync.prefs.sync.zen.memory.idle-timeout-minutes
+  value: true
+
+- name: services.sync.prefs.sync.zen.memory.early-unload-enabled
+  value: true
+
+- name: services.sync.prefs.sync.zen.memory.include-pinned
+  value: true
+
+- name: services.sync.prefs.sync.zen.memory.include-essentials
+  value: true
+
+- name: services.sync.prefs.sync.zen.memory.exempt-hosts
+  value: true
+
 - name: services.sync.prefs.sync.zen.view.show-newtab-button-top
   value: true
 
