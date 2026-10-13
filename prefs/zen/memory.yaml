@@ -1,0 +1,44 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+# Zen Adaptive Memory Manager (ZAMM) preferences.
+# Strict mode (10-minute idle unloading) is the default.
+# The legacy `zen.tab-unloader.timeout-minutes` pref is still honored as a
+# one-time fallback when `zen.memory.idle-timeout-minutes` was never set.
+
+- name: zen.memory.enabled
+  value: true
+
+- name: zen.memory.mode
+  value: "strict"
+
+- name: zen.memory.idle-timeout-minutes
+  value: 10
+
+- name: zen.memory.early-unload-enabled
+  value: true
+
+- name: zen.memory.include-pinned
+  value: true
+
+- name: zen.memory.include-essentials
+  value: true
+
+- name: zen.memory.exempt-hosts
+  value: ""
+
+- name: zen.memory.ram-budget-mb
+  value: 0
+
+- name: zen.memory.reopen-cooldown-seconds
+  value: 120
+
+- name: zen.memory.max-discards-per-sweep
+  value: 5
+
+- name: zen.memory.sweep-interval-seconds
+  value: 60
+
+- name: zen.memory.experimental-sleep
+  value: false
