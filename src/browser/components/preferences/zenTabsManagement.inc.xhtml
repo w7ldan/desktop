@@ -77,6 +77,72 @@
       </hbox>
 </groupbox>
 
+<hbox id="zenMemoryManagerCategory"
+      class="subcategory"
+      hidden="true"
+      data-category="paneZenTabManagement">
+      <html:h1 data-l10n-id="pane-zen-memory-title"/>
+</hbox>
+
+<groupbox id="zenMemoryGroup" data-category="paneZenTabManagement" hidden="true" class="highlighting-group">
+      <label><html:h2 data-l10n-id="zen-memory-header"/></label>
+      <description class="description-deemphasized" data-l10n-id="zen-memory-description" />
+
+      <checkbox id="zenMemoryEnabled"
+                data-l10n-id="zen-memory-enabled"
+                preference="zen.memory.enabled"/>
+      <hbox align="center">
+            <label id="zenMemoryModeLabel" data-l10n-id="zen-memory-mode-label" control="zenMemoryMode"/>
+            <menulist id="zenMemoryMode" preference="zen.memory.mode">
+                  <menupopup>
+                        <menuitem data-l10n-id="zen-memory-mode-strict" value="strict"/>
+                        <menuitem data-l10n-id="zen-memory-mode-balanced" value="balanced"/>
+                        <menuitem data-l10n-id="zen-memory-mode-performance" value="performance"/>
+                  </menupopup>
+            </menulist>
+      </hbox>
+      <hbox align="center">
+            <label id="zenMemoryTimeoutLabel" data-l10n-id="zen-memory-timeout-label" control="zenMemoryTimeout"/>
+            <menulist id="zenMemoryTimeout" preference="zen.memory.idle-timeout-minutes">
+                  <menupopup>
+                        <menuitem label="5" value="5"/>
+                        <menuitem label="10" value="10"/>
+                        <menuitem label="15" value="15"/>
+                        <menuitem label="30" value="30"/>
+                        <menuitem label="45" value="45"/>
+                        <menuitem label="60" value="60"/>
+                  </menupopup>
+            </menulist>
+      </hbox>
+      <checkbox id="zenMemoryEarlyUnload"
+                data-l10n-id="zen-memory-early-unload"
+                preference="zen.memory.early-unload-enabled"/>
+      <checkbox id="zenMemoryIncludePinned"
+                data-l10n-id="zen-memory-include-pinned"
+                preference="zen.memory.include-pinned"/>
+      <checkbox id="zenMemoryIncludeEssentials"
+                data-l10n-id="zen-memory-include-essentials"
+                preference="zen.memory.include-essentials"/>
+      <hbox align="center">
+            <label id="zenMemoryExemptHostsLabel" data-l10n-id="zen-memory-exempt-hosts-label" control="zenMemoryExemptHosts"/>
+            <html:input id="zenMemoryExemptHosts" type="text" preference="zen.memory.exempt-hosts"/>
+      </hbox>
+      <description class="description-deemphasized" data-l10n-id="zen-memory-exempt-hosts-description" />
+      <hbox align="center">
+            <label id="zenMemoryBudgetLabel" data-l10n-id="zen-memory-budget-label" control="zenMemoryBudget"/>
+            <menulist id="zenMemoryBudget" preference="zen.memory.ram-budget-mb">
+                  <menupopup>
+                        <menuitem data-l10n-id="zen-memory-budget-disabled" value="0"/>
+                        <menuitem label="2 GB" value="2048"/>
+                        <menuitem label="4 GB" value="4096"/>
+                        <menuitem label="6 GB" value="6144"/>
+                  </menupopup>
+            </menulist>
+      </hbox>
+      <description class="description-deemphasized" data-l10n-id="zen-memory-budget-description" />
+      <description id="zenMemoryDiagnostics" class="description-deemphasized" />
+</groupbox>
+
 </html:template>
 
 

@@ -739,6 +739,8 @@ var gZenWorkspacesSettings = {
 
     toggleZenCycleByAttrWarning.observe(); // call it once on initial load
 
+    this._initMemoryManager();
+
     Services.prefs.addObserver("zen.glance.enabled", tabsUnloaderPrefListener); // We can use the same listener for both prefs
     Services.prefs.addObserver("zen.workspaces.separate-essentials", tabsUnloaderPrefListener);
     Services.prefs.addObserver("zen.window-sync.sync-only-pinned-tabs", tabsUnloaderPrefListener);
@@ -762,7 +764,134 @@ var gZenWorkspacesSettings = {
         "browser.ctrlTab.sortByRecentlyUsed",
         toggleZenCycleByAttrWarning
       );
+      Services.prefs.removeObserver("zen.memory.mode", this._memoryModeApplier);
+      Services.prefs.removeObserver("zen.memory.enabled", this._memoryDiagnosticsRefresher);
+      Services.prefs.removeObserver(
+        "zen.memory.idle-timeout-minutes",
+        this._memoryDiagnosticsRefresher
+      );
     });
+  },
+
+  _memoryModeApplier: {
+    observe() {
+      try {
+        gZenWorkspacesSettings._applyMemoryModePreset();
+      } catch (ex) {
+        console.error("Failed to apply memory mode preset", ex);
+      }
+    },
+  },
+
+  _memoryDiagnosticsRefresher: {
+    observe() {
+      try {
+        gZenWorkspacesSettings._refreshMemoryDiagnostics();
+      } catch {}
+    },
+  },
+
+  _applyingMemoryPreset: false,
+
+  _applyMemoryModePreset() {
+    if (this._applyingMemoryPreset) {
+      return;
+    }
+    let mode = "strict";
+    try {
+      mode = Services.prefs.getStringPref("zen.memory.mode", "strict");
+    } catch {}
+    let preset = null;
+    if (mode === "balanced") {
+      preset = {
+        "zen.memory.idle-timeout-minutes": 45,
+        "zen.memory.early-unload-enabled": true,
+        "zen.memory.include-pinned": false,
+        "zen.memory.include-essentials": false,
+        "zen.memory.ram-budget-mb": 0,
+      };
+    } else if (mode === "performance") {
+      preset = {
+        "zen.memory.idle-timeout-minutes": 0,
+        "zen.memory.early-unload-enabled": false,
+        "zen.memory.include-pinned": false,
+        "zen.memory.include-essentials": false,
+        "zen.memory.ram-budget-mb": 0,
+      };
+    } else {
+      if (mode !== "strict") {
+        Services.prefs.setStringPref("zen.memory.mode", "strict");
+      }
+      preset = {
+        "zen.memory.idle-timeout-minutes": 10,
+        "zen.memory.early-unload-enabled": true,
+        "zen.memory.include-pinned": true,
+        "zen.memory.include-essentials": true,
+        "zen.memory.ram-budget-mb": 0,
+      };
+    }
+    this._applyingMemoryPreset = true;
+    try {
+      for (const [pref, value] of Object.entries(preset)) {
+        if (typeof value === "boolean") {
+          if (Services.prefs.getBoolPref(pref, !value) !== value) {
+            Services.prefs.setBoolPref(pref, value);
+          }
+        } else if (Services.prefs.getIntPref(pref, value + 1) !== value) {
+          Services.prefs.setIntPref(pref, value);
+        }
+      }
+    } finally {
+      this._applyingMemoryPreset = false;
+    }
+    this._refreshMemoryDiagnostics();
+  },
+
+  _initMemoryManager() {
+    Services.prefs.addObserver("zen.memory.mode", this._memoryModeApplier);
+    Services.prefs.addObserver("zen.memory.enabled", this._memoryDiagnosticsRefresher);
+    Services.prefs.addObserver(
+      "zen.memory.idle-timeout-minutes",
+      this._memoryDiagnosticsRefresher
+    );
+    this._refreshMemoryDiagnostics();
+  },
+
+  _refreshMemoryDiagnostics() {
+    const element = document.getElementById("zenMemoryDiagnostics");
+    if (!element) {
+      return;
+    }
+    let manager = null;
+    try {
+      manager = nsZenMultiWindowFeature.currentBrowser?.gZenMemoryManager ?? null;
+    } catch {}
+    if (!manager || typeof manager.getDiagnostics !== "function") {
+      element.textContent = "";
+      return;
+    }
+    let diagnostics = null;
+    try {
+      diagnostics = manager.getDiagnostics();
+    } catch {
+      return;
+    }
+    const recent = (diagnostics.recentDecisions ?? [])
+      .slice(0, 5)
+      .map(entry => `${entry.host || "tab"} ${entry.reason} → ${entry.outcome}`)
+      .join("; ");
+    const resident =
+      diagnostics.residentParentMB === null
+        ? "parent process: unavailable"
+        : `parent process: ${diagnostics.residentParentMB} MB (lower bound)`;
+    element.textContent =
+      `Status: ${diagnostics.enabled ? "enabled" : "disabled"} (${diagnostics.mode}) • ` +
+      `Idle timeout: ${diagnostics.idleTimeoutMinutes} min • ` +
+      `Loaded: ${diagnostics.loadedTabs} • Discarded: ${diagnostics.discardedTabs} • ` +
+      `Auto-discards: ${diagnostics.totalAutoDiscards} ` +
+      `(${diagnostics.deadlineDiscards} deadline, ${diagnostics.earlyDiscards} early) • ` +
+      `${resident}; per-tab bytes are not precisely attributable. ` +
+      (recent ? `Recent: ${recent}.` : "No discards recorded yet.");
   },
 };
 
@@ -1157,6 +1286,66 @@ Preferences.addAll([
     id: "zen.tab-unloader.timeout-minutes",
     type: "int",
     default: 10,
+  },
+  {
+    id: "zen.memory.enabled",
+    type: "bool",
+    default: true,
+  },
+  {
+    id: "zen.memory.mode",
+    type: "string",
+    default: "strict",
+  },
+  {
+    id: "zen.memory.idle-timeout-minutes",
+    type: "int",
+    default: 10,
+  },
+  {
+    id: "zen.memory.early-unload-enabled",
+    type: "bool",
+    default: true,
+  },
+  {
+    id: "zen.memory.include-pinned",
+    type: "bool",
+    default: true,
+  },
+  {
+    id: "zen.memory.include-essentials",
+    type: "bool",
+    default: true,
+  },
+  {
+    id: "zen.memory.exempt-hosts",
+    type: "string",
+    default: "",
+  },
+  {
+    id: "zen.memory.ram-budget-mb",
+    type: "int",
+    default: 0,
+  },
+  {
+    id: "zen.memory.reopen-cooldown-seconds",
+    type: "int",
+    default: 120,
+  },
+  {
+    id: "zen.memory.max-discards-per-sweep",
+    type: "int",
+    default: 5,
+  },
+  {
+    id: "zen.memory.sweep-interval-seconds",
+    type: "int",
+    default: 60,
+  },
+  {
+    id: "zen.memory.experimental-sleep",
+    type: "bool",
+    default: false,
   },
   {
     id: "zen.pinned-tab-manager.restore-pinned-tabs-to-pinned-url",
