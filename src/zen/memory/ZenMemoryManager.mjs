@@ -29,6 +29,8 @@ const PREFS = {
 const ELEVATED_HOLD_MS = 5 * 60 * 1000;
 const MAX_RECENT_DECISIONS = 25;
 const MAX_REVISIT_COUNT = 50;
+const DEADLINE_BATCH_SIZE = 10;
+const MAX_DEADLINE_BATCHES_PER_SWEEP = 20;
 
 class nsZenMemoryManager {
   #started = false;
@@ -45,6 +47,7 @@ class nsZenMemoryManager {
   #recentDecisions = [];
   #residentMB = null;
   #nowOverride = null;
+  #lastSelectedTab = null;
 
   constructor() {
     this._onTabSelect = this._onTabSelect.bind(this);
@@ -52,6 +55,8 @@ class nsZenMemoryManager {
     this._onTabClose = this._onTabClose.bind(this);
     this._onTabRestored = this._onTabRestored.bind(this);
     this._onWindowUnload = this._onWindowUnload.bind(this);
+    this._onWindowActivate = this._onWindowActivate.bind(this);
+    this._onWindowDeactivate = this._onWindowDeactivate.bind(this);
     this._onSweepTimer = this._onSweepTimer.bind(this);
     this._onPrefChanged = this._onPrefChanged.bind(this);
     this._deferredStart = this._deferredStart.bind(this);
@@ -214,6 +219,8 @@ class nsZenMemoryManager {
     window.addEventListener("TabOpen", this._onTabOpen);
     window.addEventListener("TabClose", this._onTabClose);
     window.addEventListener("SSTabRestored", this._onTabRestored);
+    window.addEventListener("activate", this._onWindowActivate);
+    window.addEventListener("deactivate", this._onWindowDeactivate);
     this._seedAllTabs();
     this._scheduleNextSweep();
   }
@@ -239,6 +246,8 @@ class nsZenMemoryManager {
       window.removeEventListener("TabOpen", this._onTabOpen);
       window.removeEventListener("TabClose", this._onTabClose);
       window.removeEventListener("SSTabRestored", this._onTabRestored);
+      window.removeEventListener("activate", this._onWindowActivate);
+      window.removeEventListener("deactivate", this._onWindowDeactivate);
       window.removeEventListener("unload", this._onWindowUnload);
     } catch {}
   }
@@ -291,11 +300,13 @@ class nsZenMemoryManager {
 
   _seedAllTabs() {
     const now = this._now();
+    this.#lastSelectedTab = null;
     for (const tab of this._windowTabs()) {
       const state = this._stateFor(tab);
       state.lastActiveMs = now;
       if (tab.selected) {
         state.reopenedAtMs = now;
+        this.#lastSelectedTab = tab;
       }
     }
   }
@@ -320,10 +331,26 @@ class nsZenMemoryManager {
       return;
     }
     const now = this._now();
+    let previous = null;
+    try {
+      previous = event.detail?.previousTab ?? null;
+    } catch {
+      previous = null;
+    }
+    if (!previous || previous === tab) {
+      previous = this.#lastSelectedTab;
+    }
+    if (previous && previous !== tab) {
+      try {
+        const prevState = this._stateFor(previous);
+        prevState.lastActiveMs = now;
+      } catch {}
+    }
     const state = this._stateFor(tab);
     state.lastActiveMs = now;
     state.reopenedAtMs = now;
     state.revisitCount = Math.min(state.revisitCount + 1, MAX_REVISIT_COUNT);
+    this.#lastSelectedTab = tab;
   }
 
   _onTabOpen(event) {
@@ -335,6 +362,9 @@ class nsZenMemoryManager {
     const state = this._stateFor(tab);
     state.lastActiveMs = now;
     state.reopenedAtMs = now;
+    if (tab.selected) {
+      this.#lastSelectedTab = tab;
+    }
   }
 
   _onTabClose(event) {
@@ -343,6 +373,15 @@ class nsZenMemoryManager {
       return;
     }
     this.#tabState.delete(tab);
+    if (this.#lastSelectedTab === tab) {
+      this.#lastSelectedTab = null;
+      try {
+        const current = window.gBrowser?.selectedTab ?? null;
+        if (current && current.localName === "tab") {
+          this.#lastSelectedTab = current;
+        }
+      } catch {}
+    }
   }
 
   _onTabRestored(event) {
@@ -352,10 +391,37 @@ class nsZenMemoryManager {
     }
     const now = this._now();
     const state = this._stateFor(tab);
+    state.lastActiveMs = now;
+    state.reopenedAtMs = now;
     if (tab.selected) {
-      state.lastActiveMs = now;
-      state.reopenedAtMs = now;
+      this.#lastSelectedTab = tab;
     }
+  }
+
+  _onWindowActivate() {
+    if (this.#disposed) {
+      return;
+    }
+    try {
+      const current = window.gBrowser?.selectedTab ?? null;
+      if (current && current.localName === "tab") {
+        this.#lastSelectedTab = current;
+      }
+    } catch {}
+  }
+
+  _onWindowDeactivate() {
+    if (this.#disposed) {
+      return;
+    }
+    const now = this._now();
+    try {
+      const current =
+        this.#lastSelectedTab ?? window.gBrowser?.selectedTab ?? null;
+      if (current) {
+        this._stateFor(current).lastActiveMs = now;
+      }
+    } catch {}
   }
 
   _scheduleNextSweep() {
@@ -634,9 +700,45 @@ class nsZenMemoryManager {
     }
 
     let discarded = 0;
+    let deadlineBatches = 0;
     if (deadline.length) {
-      const batch = deadline.slice(0, config.maxDiscardsPerSweep);
-      discarded += await this._discardBatch(batch, "idle-deadline", now);
+      const sorted = [...deadline].sort((a, b) => {
+        const idleA = a.snapshot?.lastActiveMs ?? now;
+        const idleB = b.snapshot?.lastActiveMs ?? now;
+        if (idleA !== idleB) {
+          return idleA - idleB;
+        }
+        return (a.index ?? 0) - (b.index ?? 0);
+      });
+      const totalBatches = Math.min(
+        Math.ceil(sorted.length / DEADLINE_BATCH_SIZE),
+        MAX_DEADLINE_BATCHES_PER_SWEEP
+      );
+      for (
+        let batchIndex = 0;
+        batchIndex < totalBatches && !this.#disposed;
+        batchIndex++
+      ) {
+        const chunk = sorted.slice(
+          batchIndex * DEADLINE_BATCH_SIZE,
+          (batchIndex + 1) * DEADLINE_BATCH_SIZE
+        );
+        const live = chunk.filter(
+          entry =>
+            entry?.tab &&
+            !entry.tab.closing &&
+            !entry.tab.selected &&
+            !this._isDiscarded(entry.tab)
+        );
+        if (live.length === 0) {
+          continue;
+        }
+        deadlineBatches += 1;
+        discarded += await this._discardBatch(live, "idle-deadline", now);
+        if (batchIndex + 1 < totalBatches) {
+          await this._yieldToUI();
+        }
+      }
     }
     if (early.length && earlyContext) {
       const sorted = ZenMemoryPolicy.sortCandidates(early, now);
@@ -656,14 +758,24 @@ class nsZenMemoryManager {
       discarded,
       deadlineCandidates: deadline.length,
       earlyCandidates: early.length,
+      deadlineBatches,
       pressure,
     };
   }
 
+  async _yieldToUI() {
+    try {
+      await Promise.resolve();
+    } catch {}
+  }
+
   async _discardBatch(candidates, reason, now) {
     const live = candidates
-      .map(entry => entry.tab)
-      .filter(tab => tab && !tab.closing && !tab.selected);
+      .map(entry => entry.tab ?? entry)
+      .filter(
+        tab =>
+          tab && !tab.closing && !tab.selected && !this._isDiscarded(tab)
+      );
     if (live.length === 0) {
       return 0;
     }
@@ -849,6 +961,10 @@ class nsZenMemoryManager {
     this._stateFor(tab).reopenedAtMs = ms;
   }
 
+  _testGetLastActive(tab) {
+    return this._stateFor(tab).lastActiveMs;
+  }
+
   async _testSweep() {
     return this.sweep({ reason: "test" });
   }
@@ -860,6 +976,16 @@ class nsZenMemoryManager {
     this.#recentDecisions = [];
     this.#pressure = "normal";
     this.#elevatedUntil = 0;
+  }
+
+  _testResetSelection() {
+    this.#lastSelectedTab = null;
+    try {
+      const current = window.gBrowser?.selectedTab ?? null;
+      if (current && current.localName === "tab") {
+        this.#lastSelectedTab = current;
+      }
+    } catch {}
   }
 }
 

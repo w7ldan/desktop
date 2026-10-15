@@ -197,6 +197,147 @@ const diag = manager.getDiagnostics();
 assert.equal(diag.totalAutoDiscards, 1);
 assert.equal(diag.approxBytesReclaimed, null);
 assert.equal(diag.sleepSupported, false);
+
+manager._testResetCounters();
+manager._testClearNow();
+
+{
+  const t0 = Date.now();
+  const tabA = makeTab({ selected: true, host: "a.example" });
+  const tabB = makeTab({ host: "b.example" });
+  const hourTabs = [tabA, tabB];
+  windowStub.gBrowser.tabs = hourTabs;
+  windowStub.gZenWorkspaces.allStoredTabs = hourTabs;
+  windowStub.gBrowser.selectedTab = tabA;
+  manager._testResetSelection();
+  manager._testSetNow(t0);
+  manager._onTabSelect({ target: tabA, detail: {} });
+  assert.equal(
+    manager._testGetLastActive(tabA),
+    t0,
+    "select resets timer"
+  );
+  const oneHourLater = t0 + 61 * 60 * 1000;
+  manager._testSetNow(oneHourLater);
+  tabA.selected = false;
+  tabB.selected = true;
+  windowStub.gBrowser.selectedTab = tabB;
+  manager._onTabSelect({ target: tabB, detail: { previousTab: tabA } });
+  assert.equal(
+    manager._testGetLastActive(tabA),
+    oneHourLater,
+    "leaving a tab after an hour restarts its inactivity timer"
+  );
+  assert.equal(
+    manager._testGetLastActive(tabB),
+    oneHourLater,
+    "newly selected tab timer resets"
+  );
+  const immediate = await manager._testSweep();
+  assert.equal(
+    immediate.discarded,
+    0,
+    "just-left tab is not immediately discarded"
+  );
+  assert.ok(!tabA.hasAttribute("pending"), "hour-long tab kept right after leave");
+  manager._testSetNow(oneHourLater + 11 * 60 * 1000);
+  const later = await manager._testSweep();
+  assert.equal(later.discarded, 1, "tab unloads 10 minutes after leaving");
+  assert.ok(tabA.hasAttribute("pending"), "left tab unloads after deadline");
+  assert.ok(!tabB.hasAttribute("pending"), "currently selected tab never unloads");
+  manager._testClearNow();
+  manager._testResetCounters();
+}
+
+{
+  const many = [];
+  const sel = makeTab({ selected: true, host: "keep.example" });
+  many.push(sel);
+  for (let i = 0; i < 60; i++) {
+    many.push(makeTab({ host: `idle${i}.example` }));
+  }
+  windowStub.gBrowser.tabs = many;
+  windowStub.gZenWorkspaces.allStoredTabs = many;
+  windowStub.gBrowser.selectedTab = sel;
+  manager._testResetSelection();
+  const nowMany = Date.now();
+  manager._testSetNow(nowMany);
+  for (const tab of many) {
+    if (tab !== sel) {
+      manager._testSetLastActive(tab, nowMany - 11 * 60 * 1000);
+      manager._testSetReopened(tab, 0);
+    } else {
+      manager._testSetLastActive(tab, nowMany - 11 * 60 * 1000);
+    }
+  }
+  const sweep1 = await manager._testSweep();
+  assert.equal(
+    sweep1.deadlineCandidates,
+    60,
+    "all 60 overdue tabs are candidates"
+  );
+  assert.equal(sweep1.discarded, 60, "all overdue tabs clear in one sweep");
+  assert.ok(
+    (sweep1.deadlineBatches ?? 0) > 1,
+    "overdue tabs process in bounded batches"
+  );
+  for (const tab of many) {
+    if (tab !== sel) {
+      assert.ok(tab.hasAttribute("pending"), "each overdue tab unloads");
+    }
+  }
+  assert.ok(!sel.hasAttribute("pending"), "selected tab never unloads");
+  const sweep2 = await manager._testSweep();
+  assert.equal(sweep2.discarded, 0, "no duplicate unloading on resweep");
+  manager._testClearNow();
+  manager._testResetCounters();
+}
+
+{
+  const tabX = makeTab({ selected: true, host: "x.example" });
+  const tabY = makeTab({ host: "y.example" });
+  const pair = [tabX, tabY];
+  windowStub.gBrowser.tabs = pair;
+  windowStub.gZenWorkspaces.allStoredTabs = pair;
+  windowStub.gBrowser.selectedTab = tabX;
+  manager._testResetSelection();
+  const nowDeact = Date.now();
+  manager._testSetNow(nowDeact);
+  manager._onTabSelect({ target: tabX, detail: {} });
+  manager._testSetNow(nowDeact + 5 * 60 * 1000);
+  manager._onWindowDeactivate();
+  assert.equal(
+    manager._testGetLastActive(tabX),
+    nowDeact + 5 * 60 * 1000,
+    "window deactivate starts timer for selected tab"
+  );
+  manager._onWindowActivate();
+  manager._testSetNow(nowDeact + 6 * 60 * 1000);
+  tabX.selected = false;
+  tabY.selected = true;
+  windowStub.gBrowser.selectedTab = tabY;
+  manager._onTabSelect({ target: tabY, detail: { previousTab: tabX } });
+  const afterFocusSwitch = await manager._testSweep();
+  assert.equal(
+    afterFocusSwitch.discarded,
+    0,
+    "tab switched right after focus change is protected"
+  );
+  const restored = makeTab({ host: "restored.example" });
+  const withRestored = [tabX, tabY, restored];
+  windowStub.gBrowser.tabs = withRestored;
+  windowStub.gZenWorkspaces.allStoredTabs = withRestored;
+  manager._testSetNow(nowDeact + 7 * 60 * 1000);
+  manager._onTabRestored({ target: restored });
+  assert.equal(
+    manager._testGetLastActive(restored),
+    nowDeact + 7 * 60 * 1000,
+    "restored tab timer starts at restore"
+  );
+  manager._testClearNow();
+  manager._testResetCounters();
+}
+
 manager.dispose();
 // eslint-disable-next-line no-console
 console.log("HARNESS-OK: manager logic validated end-to-end in Node");

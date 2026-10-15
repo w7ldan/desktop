@@ -103,18 +103,104 @@ add_task(async function test_early_unload_disabled_by_pref() {
 
 add_task(async function test_max_discards_per_sweep_caps_pressure_unloads() {
   await SpecialPowers.pushPrefEnv({
-    set: [["zen.memory.max-discards-per-sweep", 2]],
+    set: [
+      ["zen.memory.max-discards-per-sweep", 2],
+      ["zen.memory.reopen-cooldown-seconds", 0],
+    ],
   });
   try {
     const tabs = [];
     try {
       for (let i = 0; i < 4; i++) {
         const tab = await openBackgroundTab();
+        manager()._testSetLastActive(tab, Date.now() - 3 * 60 * 1000);
+        manager()._testSetReopened(tab, 0);
+        tabs.push(tab);
+      }
+      manager().observe(null, "memory-pressure", "heap-minimize");
+      const result = await manager()._testSweep();
+      ok(
+        result.discarded <= 2,
+        "Early unloads respect the per-sweep discard cap"
+      );
+    } finally {
+      for (const tab of tabs) {
+        if (tab && !tab.closing) {
+          BrowserTestUtils.removeTab(tab);
+        }
+      }
+    }
+  } finally {
+    await SpecialPowers.popPrefEnv();
+  }
+});
+
+add_task(async function test_strict_deadline_ignores_pressure_cap() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["zen.memory.max-discards-per-sweep", 2],
+      ["zen.memory.reopen-cooldown-seconds", 0],
+      ["zen.memory.early-unload-enabled", false],
+    ],
+  });
+  try {
+    const tabs = [];
+    try {
+      for (let i = 0; i < 6; i++) {
+        const tab = await openBackgroundTab();
         backdate(tab);
         tabs.push(tab);
       }
       const result = await manager()._testSweep();
-      ok(result.discarded <= 2, "Sweep respects the per-sweep discard cap");
+      is(
+        result.discarded,
+        6,
+        "Strict deadline clears all overdue tabs despite the pressure cap"
+      );
+      ok(
+        (result.deadlineBatches ?? 0) >= 1,
+        "Deadline processes in bounded batches"
+      );
+    } finally {
+      for (const tab of tabs) {
+        if (tab && !tab.closing) {
+          BrowserTestUtils.removeTab(tab);
+        }
+      }
+    }
+  } finally {
+    await SpecialPowers.popPrefEnv();
+  }
+});
+
+add_task(async function test_large_overdue_backlog_clears_promptly() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["zen.memory.max-discards-per-sweep", 5],
+      ["zen.memory.reopen-cooldown-seconds", 0],
+      ["zen.memory.early-unload-enabled", false],
+    ],
+  });
+  try {
+    const tabs = [];
+    try {
+      for (let i = 0; i < 55; i++) {
+        const tab = await openBackgroundTab();
+        backdate(tab);
+        tabs.push(tab);
+      }
+      const result = await manager()._testSweep();
+      is(
+        result.deadlineCandidates,
+        55,
+        "All 55 overdue tabs are candidates"
+      );
+      is(result.discarded, 55, "Large backlog clears in a single sweep");
+      for (const tab of tabs) {
+        ok(tab.hasAttribute("pending"), "Each overdue tab unloads");
+      }
+      const resweep = await manager()._testSweep();
+      is(resweep.discarded, 0, "No duplicate unloading on resweep");
     } finally {
       for (const tab of tabs) {
         if (tab && !tab.closing) {

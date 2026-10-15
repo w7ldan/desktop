@@ -100,6 +100,66 @@ add_task(async function test_revisit_resets_inactivity_timer() {
   }
 });
 
+add_task(async function test_long_stay_then_leave_restarts_timer() {
+  const tabA = await BrowserTestUtils.openNewForegroundTab(
+    gBrowser,
+    "data:text/html,<title>stay</title>",
+    true,
+    { skipAnimation: true }
+  );
+  const tabB = await openBackgroundTab("data:text/html,<title>other</title>");
+  try {
+    const stayStart = Date.now() - 61 * 60 * 1000;
+    manager()._testSetNow(stayStart);
+    manager()._onTabSelect({ target: tabA, detail: {} });
+    const leaveAt = stayStart + 61 * 60 * 1000;
+    manager()._testSetNow(leaveAt);
+    gBrowser.selectedTab = tabB;
+    is(
+      manager()._testGetLastActive(tabA),
+      leaveAt,
+      "Leaving after an hour restarts the inactivity timer"
+    );
+    const immediate = await manager()._testSweep();
+    is(immediate.discarded, 0, "Just-left tab is not immediately discarded");
+    ok(!tabA.hasAttribute("pending"), "Hour-long tab kept right after leave");
+    manager()._testSetNow(leaveAt + 11 * 60 * 1000);
+    const later = await manager()._testSweep();
+    ok(later.discarded >= 1, "Tab unloads 10 minutes after leaving");
+    ok(tabA.hasAttribute("pending"), "Left tab unloads after deadline");
+    ok(!tabB.hasAttribute("pending"), "Currently selected tab never unloads");
+  } finally {
+    manager()._testClearNow();
+    BrowserTestUtils.removeTab(tabB);
+    BrowserTestUtils.removeTab(tabA);
+  }
+});
+
+add_task(async function test_window_deactivate_starts_selected_timer() {
+  const tab = await BrowserTestUtils.openNewForegroundTab(
+    gBrowser,
+    "data:text/html,<title>focus</title>",
+    true,
+    { skipAnimation: true }
+  );
+  try {
+    const now = Date.now();
+    manager()._testSetNow(now);
+    manager()._onTabSelect({ target: tab, detail: {} });
+    manager()._testSetNow(now + 5 * 60 * 1000);
+    manager()._onWindowDeactivate();
+    is(
+      manager()._testGetLastActive(tab),
+      now + 5 * 60 * 1000,
+      "Window deactivate starts timer for selected tab"
+    );
+    manager()._onWindowActivate();
+  } finally {
+    manager()._testClearNow();
+    BrowserTestUtils.removeTab(tab);
+  }
+});
+
 add_task(async function test_pinned_tabs_follow_policy() {
   await SpecialPowers.pushPrefEnv({
     set: [["zen.memory.include-pinned", false]],
