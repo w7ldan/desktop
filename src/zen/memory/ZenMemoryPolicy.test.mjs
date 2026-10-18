@@ -43,6 +43,7 @@ describe("normalizeConfig", () => {
     assert.equal(cfg.includeEssentials, true);
     assert.equal(cfg.earlyUnloadEnabled, true);
     assert.equal(cfg.ramBudgetMB, 0);
+    assert.equal(cfg.unloadIdlePeerConnections, true);
   });
 
   it("applies Balanced and Performance presets", () => {
@@ -50,10 +51,12 @@ describe("normalizeConfig", () => {
     assert.equal(balanced.idleTimeoutMinutes, 45);
     assert.equal(balanced.includePinned, false);
     assert.equal(balanced.includeEssentials, false);
+    assert.equal(balanced.unloadIdlePeerConnections, false);
 
     const perf = normalizeConfig({ mode: "performance" });
     assert.equal(perf.idleTimeoutMinutes, 0);
     assert.equal(perf.earlyUnloadEnabled, false);
+    assert.equal(perf.unloadIdlePeerConnections, false);
   });
 
   it("falls back to Strict for unknown modes", () => {
@@ -152,7 +155,7 @@ describe("isEligible protections", () => {
   const cases = [
     ["media", { soundPlaying: true }],
     ["media", { pictureInPicture: true }],
-    ["webrtc", { webrtc: true }],
+    ["webrtc-capture", { webrtcCapture: true }],
     ["glance", { glance: true }],
     ["active-content", { splitActive: true }],
     ["active-content", { zenModeActive: true }],
@@ -203,6 +206,91 @@ describe("isEligible protections", () => {
       scoreCandidate(loading, NOW) > scoreCandidate(settled, NOW),
       "loading tabs sort after settled tabs for early discards"
     );
+  });
+});
+
+describe("WebRTC policy", () => {
+  const strict = normalizeConfig();
+  const strictNoIdlePeers = normalizeConfig({
+    unloadIdlePeerConnections: false,
+  });
+  const balanced = normalizeConfig({ mode: "balanced" });
+  const performance = normalizeConfig({ mode: "performance" });
+
+  it("always protects active media capture", () => {
+    for (const cfg of [strict, balanced, performance]) {
+      const result = isEligible(idleTab({ webrtcCapture: true }), cfg, NOW);
+      assert.equal(result.eligible, false);
+      assert.equal(result.reason, "webrtc-capture");
+    }
+  });
+
+  it("unloads long-idle peer-only tabs in Strict mode", () => {
+    const result = isEligible(idleTab({ webrtcPeer: true }), strict, NOW);
+    assert.equal(result.eligible, true);
+    assert.equal(result.kind, "deadline");
+    assert.equal(result.reason, "idle-deadline");
+  });
+
+  it("keeps peer-only tabs loaded before the idle deadline", () => {
+    const recent = snapshotWith({
+      lastActiveMs: NOW - 9 * MIN,
+      webrtcPeer: true,
+    });
+    const result = isEligible(recent, strict, NOW);
+    assert.equal(result.eligible, false);
+    assert.equal(result.reason, "recently-active");
+  });
+
+  it("honors the explicit Strict opt-out", () => {
+    const result = isEligible(
+      idleTab({ webrtcPeer: true }),
+      strictNoIdlePeers,
+      NOW
+    );
+    assert.equal(result.eligible, false);
+    assert.equal(result.reason, "webrtc-peer");
+  });
+
+  it("leaves Balanced and Performance protection unchanged", () => {
+    for (const cfg of [balanced, performance]) {
+      const result = isEligible(idleTab({ webrtcPeer: true }), cfg, NOW);
+      assert.equal(result.eligible, false);
+      assert.equal(result.reason, "webrtc-peer");
+    }
+  });
+
+  it("never unloads peer-only tabs early under memory pressure", () => {
+    const recent = snapshotWith({
+      lastActiveMs: NOW - 3 * MIN,
+      webrtcPeer: true,
+    });
+    const armed = { armed: true, reason: "memory-pressure" };
+    const result = isEligible(recent, strict, NOW, armed);
+    assert.equal(result.eligible, false);
+    assert.equal(result.reason, "webrtc-peer");
+  });
+
+  it("still unloads peer-only tabs at the deadline with pressure armed", () => {
+    const armed = { armed: true, reason: "memory-pressure" };
+    const result = isEligible(
+      idleTab({ webrtcPeer: true }),
+      strict,
+      NOW,
+      armed
+    );
+    assert.equal(result.eligible, true);
+    assert.equal(result.kind, "deadline");
+  });
+
+  it("keeps the selected tab protected regardless of WebRTC state", () => {
+    const result = isEligible(
+      idleTab({ webrtcPeer: true, selected: true }),
+      strict,
+      NOW
+    );
+    assert.equal(result.eligible, false);
+    assert.equal(result.reason, "selected");
   });
 });
 

@@ -24,6 +24,7 @@ const PREFS = {
   maxDiscardsPerSweep: `${PREF_BRANCH}max-discards-per-sweep`,
   sweepIntervalSeconds: `${PREF_BRANCH}sweep-interval-seconds`,
   experimentalSleep: `${PREF_BRANCH}experimental-sleep`,
+  unloadIdlePeerConnections: `${PREF_BRANCH}unload-idle-peer-connections`,
 };
 
 const ELEVATED_HOLD_MS = 5 * 60 * 1000;
@@ -197,6 +198,12 @@ class nsZenMemoryManager {
       experimentalSleep: getBool(
         PREFS.experimentalSleep,
         policy.DEFAULTS.experimentalSleep
+      ),
+      unloadIdlePeerConnections: getBool(
+        PREFS.unloadIdlePeerConnections,
+        policy.presetForMode(
+          policy.normalizeMode(getString(PREFS.mode, policy.DEFAULTS.mode))
+        ).unloadIdlePeerConnections
       ),
     });
   }
@@ -463,7 +470,7 @@ class nsZenMemoryManager {
     const discarded = this._isDiscarded(tab);
     let host = "";
     let loading = false;
-    let webrtc = false;
+    let webrtcState = "none";
     let zenModeActive = false;
     if (!discarded) {
       try {
@@ -476,7 +483,7 @@ class nsZenMemoryManager {
       } catch {
         loading = false;
       }
-      webrtc = this._tabHasWebRTC(tab);
+      webrtcState = this._classifyWebRTC(tab);
       try {
         zenModeActive = !!tab.linkedBrowser?.zenModeActive;
       } catch {
@@ -497,7 +504,8 @@ class nsZenMemoryManager {
       loading,
       soundPlaying: !!(tab.soundPlaying || tab.hasAttribute("soundplaying")),
       pictureInPicture: tab.hasAttribute("pictureinpicture"),
-      webrtc,
+      webrtcCapture: webrtcState === "capture",
+      webrtcPeer: webrtcState === "peer",
       glance: this._tabIsGlance(tab),
       splitActive: this._tabInActiveSplit(tab),
       zenModeActive,
@@ -531,21 +539,36 @@ class nsZenMemoryManager {
     }
   }
 
-  _tabHasWebRTC(tab) {
+  /**
+   * Classify a tab's WebRTC state using Gecko APIs.
+   *
+   * Returns:
+   *   "capture" - active local media capture is attached to the tab
+   *               (camera, microphone, screen or window). Always protected.
+   *   "peer"    - a live RTCPeerConnection exists but no local capture was
+   *               observed. This covers idle connections and remote-only or
+   *               muted calls; Gecko does not expose a parent-process signal
+   *               that separates them, so callers treat it as the weaker,
+   *               policy-controlled state.
+   *   "none"    - no WebRTC activity detected.
+   */
+  _classifyWebRTC(tab) {
     if (this._isDiscarded(tab)) {
-      return false;
+      return "none";
     }
     try {
       const browser = tab.linkedBrowser;
       if (!browser) {
-        return false;
+        return "none";
       }
       if (window.webrtcUI?.browserHasStreams?.(browser)) {
-        return true;
+        return "capture";
       }
-      return !!browser.browsingContext?.currentWindowGlobal?.hasActivePeerConnections?.();
+      return browser.browsingContext?.currentWindowGlobal?.hasActivePeerConnections?.()
+        ? "peer"
+        : "none";
     } catch {
-      return false;
+      return "none";
     }
   }
 
@@ -728,7 +751,10 @@ class nsZenMemoryManager {
             entry?.tab &&
             !entry.tab.closing &&
             !entry.tab.selected &&
-            !this._isDiscarded(entry.tab)
+            !this._isDiscarded(entry.tab) &&
+            // Re-check capture right before discarding: a call may have
+            // started after the snapshot was taken.
+            this._classifyWebRTC(entry.tab) !== "capture"
         );
         if (live.length === 0) {
           continue;
@@ -866,6 +892,13 @@ class nsZenMemoryManager {
         loading: snapshot?.loading ?? null,
         emptyTab: snapshot?.emptyTab ?? null,
         lastActiveMs: snapshot?.lastActiveMs ?? null,
+        webrtc: !snapshot
+          ? null
+          : snapshot.webrtcCapture
+            ? "capture"
+            : snapshot.webrtcPeer
+              ? "peer"
+              : "none",
         eligible: verdict.eligible,
         reason: verdict.reason,
         kind: verdict.kind ?? null,
@@ -914,6 +947,8 @@ class nsZenMemoryManager {
       mode: config.mode,
       idleTimeoutMinutes: config.idleTimeoutMinutes,
       earlyUnloadEnabled: config.earlyUnloadEnabled,
+      unloadIdlePeerConnections:
+        config.mode === "strict" && config.unloadIdlePeerConnections,
       pressure: this.#pressure,
       residentParentMB:
         this.#residentMB === null

@@ -42,6 +42,12 @@ function makeTab(attrs = {}) {
     linkedBrowser: {
       currentURI: { host: attrs.host ?? "", spec: attrs.spec ?? "" },
       zenModeActive: !!attrs.zenModeActive,
+      _hasStreams: !!attrs.hasStreams,
+      browsingContext: {
+        currentWindowGlobal: {
+          hasActivePeerConnections: () => !!attrs.peerConnections,
+        },
+      },
     },
     hasAttribute: n => attrSet.has(n),
     getAttribute: n => attrs.get?.[n] ?? null,
@@ -86,7 +92,7 @@ const windowStub = {
   gZenWorkspaces: null,
   gZenStartup: null,
   PrivateBrowsingUtils: { isWindowPrivate: () => false },
-  webrtcUI: { browserHasStreams: () => false },
+  webrtcUI: { browserHasStreams: browser => !!browser?._hasStreams },
   gZenGlanceManager: null,
   gZenViewSplitter: null,
 };
@@ -334,6 +340,133 @@ manager._testClearNow();
     nowDeact + 7 * 60 * 1000,
     "restored tab timer starts at restore"
   );
+  manager._testClearNow();
+  manager._testResetCounters();
+}
+
+{
+  // WebRTC classification: idle peer-only tabs unload at the deadline while
+  // capture, selected and still-active peer tabs stay loaded.
+  const now = Date.now();
+  const selectedPeer = makeTab({
+    selected: true,
+    host: "peer-selected.example",
+    peerConnections: true,
+  });
+  const peerIdle = makeTab({
+    host: "peer-idle.example",
+    peerConnections: true,
+  });
+  const peerRecent = makeTab({
+    host: "peer-recent.example",
+    peerConnections: true,
+  });
+  const captureIdle = makeTab({
+    host: "capture.example",
+    hasStreams: true,
+    peerConnections: true,
+  });
+  const plainIdle = makeTab({ host: "plain.example" });
+  const wtechTabs = [selectedPeer, peerIdle, peerRecent, captureIdle, plainIdle];
+  windowStub.gBrowser.tabs = wtechTabs;
+  windowStub.gZenWorkspaces.allStoredTabs = wtechTabs;
+  windowStub.gBrowser.selectedTab = selectedPeer;
+  manager._testResetSelection();
+  manager._testResetCounters();
+  manager._testSetNow(now);
+  for (const [tab, ageMs] of [
+    [peerIdle, 11 * 60 * 1000],
+    [captureIdle, 11 * 60 * 1000],
+    [plainIdle, 11 * 60 * 1000],
+    [peerRecent, 5 * 60 * 1000],
+  ]) {
+    manager._testSetLastActive(tab, now - ageMs);
+    manager._testSetReopened(tab, 0);
+  }
+
+  const webrtcSweep = await manager._testSweep();
+  assert.equal(
+    webrtcSweep.discarded,
+    2,
+    "only the idle peer-only and plain tabs unload"
+  );
+  assert.ok(peerIdle.hasAttribute("pending"), "idle peer-only tab unloads");
+  assert.ok(plainIdle.hasAttribute("pending"), "plain idle tab unloads");
+  assert.ok(
+    !captureIdle.hasAttribute("pending"),
+    "active capture tab stays protected"
+  );
+  assert.ok(
+    !peerRecent.hasAttribute("pending"),
+    "peer tab before the deadline stays loaded"
+  );
+  assert.ok(
+    !selectedPeer.hasAttribute("pending"),
+    "selected peer tab stays protected"
+  );
+  manager._testClearNow();
+  manager._testResetCounters();
+
+  // Explicit Strict opt-out restores full peer protection.
+  StubServices.prefs.setBoolPref(
+    "zen.memory.unload-idle-peer-connections",
+    false
+  );
+  const nowOptOut = Date.now();
+  const peerIdle2 = makeTab({
+    host: "peer-optout.example",
+    peerConnections: true,
+  });
+  const optOutTabs = [peerIdle2];
+  windowStub.gBrowser.tabs = optOutTabs;
+  windowStub.gZenWorkspaces.allStoredTabs = optOutTabs;
+  manager._testSetNow(nowOptOut);
+  manager._testSetLastActive(peerIdle2, nowOptOut - 11 * 60 * 1000);
+  manager._testSetReopened(peerIdle2, 0);
+  const optOutSweep = await manager._testSweep();
+  assert.equal(optOutSweep.discarded, 0, "opt-out keeps the peer tab loaded");
+  assert.ok(
+    !peerIdle2.hasAttribute("pending"),
+    "opt-out protects the peer tab"
+  );
+  StubServices.prefs.setBoolPref(
+    "zen.memory.unload-idle-peer-connections",
+    true
+  );
+  manager._testClearNow();
+  manager._testResetCounters();
+
+  // summarizeSweep reports the exact WebRTC classification and reason.
+  const nowDiag = Date.now();
+  const diagCapture = makeTab({
+    host: "diag-capture.example",
+    spec: "https://diag-capture.example/",
+    hasStreams: true,
+    peerConnections: true,
+  });
+  const diagPeer = makeTab({
+    host: "diag-peer.example",
+    spec: "https://diag-peer.example/",
+    peerConnections: true,
+  });
+  const diagTabs = [diagCapture, diagPeer];
+  windowStub.gBrowser.tabs = diagTabs;
+  windowStub.gZenWorkspaces.allStoredTabs = diagTabs;
+  manager._testSetNow(nowDiag);
+  manager._testSetLastActive(diagCapture, nowDiag - 3 * 60 * 1000);
+  manager._testSetLastActive(diagPeer, nowDiag - 3 * 60 * 1000);
+  const summary = manager.summarizeSweep();
+  const captureEntry = summary.tabs.find(tab =>
+    tab.host.includes("diag-capture")
+  );
+  const peerEntry = summary.tabs.find(tab => tab.host.includes("diag-peer"));
+  assert.equal(captureEntry.webrtc, "capture", "diagnostics report capture");
+  assert.equal(
+    captureEntry.reason,
+    "webrtc-capture",
+    "diagnostics report the capture protection reason"
+  );
+  assert.equal(peerEntry.webrtc, "peer", "diagnostics report idle peer");
   manager._testClearNow();
   manager._testResetCounters();
 }

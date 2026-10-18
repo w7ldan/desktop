@@ -27,6 +27,7 @@ export const DEFAULTS = {
   maxDiscardsPerSweep: 5,
   sweepIntervalSeconds: 60,
   experimentalSleep: false,
+  unloadIdlePeerConnections: true,
 };
 
 export const LIMITS = {
@@ -47,6 +48,7 @@ export function presetForMode(mode) {
         includePinned: false,
         includeEssentials: false,
         ramBudgetMB: 0,
+        unloadIdlePeerConnections: false,
       };
     case MODES.PERFORMANCE:
       return {
@@ -55,6 +57,7 @@ export function presetForMode(mode) {
         includePinned: false,
         includeEssentials: false,
         ramBudgetMB: 0,
+        unloadIdlePeerConnections: false,
       };
     case MODES.STRICT:
     default:
@@ -64,6 +67,7 @@ export function presetForMode(mode) {
         includePinned: true,
         includeEssentials: true,
         ramBudgetMB: 0,
+        unloadIdlePeerConnections: true,
       };
   }
 }
@@ -176,6 +180,10 @@ export function normalizeConfig(raw = {}) {
       raw.experimentalSleep,
       DEFAULTS.experimentalSleep
     ),
+    unloadIdlePeerConnections: toBool(
+      raw.unloadIdlePeerConnections ?? preset.unloadIdlePeerConnections,
+      preset.unloadIdlePeerConnections
+    ),
   };
 }
 
@@ -188,7 +196,8 @@ export function blankSnapshot() {
     loading: false,
     soundPlaying: false,
     pictureInPicture: false,
-    webrtc: false,
+    webrtcCapture: false,
+    webrtcPeer: false,
     glance: false,
     splitActive: false,
     zenModeActive: false,
@@ -234,8 +243,19 @@ export function isEligible(snapshot, config, nowMs, earlyContext = null) {
   if (tab.soundPlaying || tab.pictureInPicture) {
     return { eligible: false, reason: "media" };
   }
-  if (tab.webrtc) {
-    return { eligible: false, reason: "webrtc" };
+  // Active local media capture (camera, microphone, screen or window) is a
+  // reliable sign of a live call and always retains protection, including
+  // muted or paused streams whose tracks are still attached.
+  if (tab.webrtcCapture) {
+    return { eligible: false, reason: "webrtc-capture" };
+  }
+  // A bare RTCPeerConnection with no local capture is either an idle
+  // connection or a remote-only/muted call; Gecko cannot tell them apart from
+  // the browser process. Protection therefore depends on an explicit policy.
+  const unloadIdlePeers =
+    cfg.mode === MODES.STRICT && cfg.unloadIdlePeerConnections;
+  if (tab.webrtcPeer && !unloadIdlePeers) {
+    return { eligible: false, reason: "webrtc-peer" };
   }
   if (tab.glance) {
     return { eligible: false, reason: "glance" };
@@ -281,6 +301,12 @@ export function isEligible(snapshot, config, nowMs, earlyContext = null) {
     earlyContext.armed === true &&
     idle > 0
   ) {
+    // Idle peer connections are only ever released at the idle deadline,
+    // never early under memory pressure, so a possibly-active remote call is
+    // not torn down without the full configured grace period.
+    if (tab.webrtcPeer) {
+      return { eligible: false, reason: "webrtc-peer" };
+    }
     return {
       eligible: true,
       reason: earlyContext.reason ?? "memory-pressure",

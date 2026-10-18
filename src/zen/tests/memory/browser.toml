@@ -10,3 +10,5 @@ prefs = [
 ["browser_memory_manager_strict.js"]
 
 ["browser_memory_manager_pressure.js"]
+
+["browser_memory_manager_webrtc.js"]

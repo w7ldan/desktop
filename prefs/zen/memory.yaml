@@ -42,3 +42,10 @@
 
 - name: zen.memory.experimental-sleep
   value: false
+
+# Idle RTCPeerConnection-only tabs (no camera/microphone/screen capture) may be
+# unloaded after the idle deadline in Strict mode. Gecko cannot distinguish an
+# idle connection from a remote-only or muted call from the browser process, so
+# this is an explicit opt-in and never applies to Balanced or Performance.
+- name: zen.memory.unload-idle-peer-connections
+  value: true

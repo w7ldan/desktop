@@ -809,6 +809,7 @@ var gZenWorkspacesSettings = {
         "zen.memory.include-pinned": false,
         "zen.memory.include-essentials": false,
         "zen.memory.ram-budget-mb": 0,
+        "zen.memory.unload-idle-peer-connections": false,
       };
     } else if (mode === "performance") {
       preset = {
@@ -817,6 +818,7 @@ var gZenWorkspacesSettings = {
         "zen.memory.include-pinned": false,
         "zen.memory.include-essentials": false,
         "zen.memory.ram-budget-mb": 0,
+        "zen.memory.unload-idle-peer-connections": false,
       };
     } else {
       if (mode !== "strict") {
@@ -828,6 +830,7 @@ var gZenWorkspacesSettings = {
         "zen.memory.include-pinned": true,
         "zen.memory.include-essentials": true,
         "zen.memory.ram-budget-mb": 0,
+        "zen.memory.unload-idle-peer-connections": true,
       };
     }
     this._applyingMemoryPreset = true;
@@ -1346,6 +1349,11 @@ Preferences.addAll([
     id: "zen.memory.experimental-sleep",
     type: "bool",
     default: false,
+  },
+  {
+    id: "zen.memory.unload-idle-peer-connections",
+    type: "bool",
+    default: true,
   },
   {
     id: "zen.pinned-tab-manager.restore-pinned-tabs-to-pinned-url",
